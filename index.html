@@ -884,13 +884,39 @@ const dishSearchIndex = new Fuse(DATA, {
   ],
   threshold: 0.4,       // higher = more forgiving of typos/misspellings
   ignoreLocation: true, // match anywhere in the field, not just the start
-  minMatchCharLength: 2
+  minMatchCharLength: 2,
+  includeScore: true
 });
+
+const CHAT_STOPWORDS = new Set([
+  'what','whats','how','do','does','did','is','are','was','were','the','a','an','of','on','in',
+  'for','to','it','goes','go','with','and','or','can','could','would','should','you','me','my',
+  'i','we','please','have','has','had','this','that','these','those','into','onto','about','at',
+  'from','as','be','been','being','tell','need','want','their','there','make','made','put'
+]);
 
 function findRelevantDishes(q){
   if(!q || !q.trim()) return [];
-  const results = dishSearchIndex.search(q, { limit: 5 });
-  return results.map(r => r.item);
+  const words = q.toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !CHAT_STOPWORDS.has(w));
+
+  // fall back to the raw query if everything got filtered out (e.g. very short questions)
+  const searchTerms = words.length ? words : [q];
+
+  const scores = new Map(); // item -> best (lowest) Fuse score seen across all keyword searches
+  searchTerms.forEach(term => {
+    dishSearchIndex.search(term, { limit: 5 }).forEach(r => {
+      const prev = scores.get(r.item);
+      if(prev === undefined || r.score < prev) scores.set(r.item, r.score);
+    });
+  });
+
+  return Array.from(scores.entries())
+    .sort((a,b) => a[1] - b[1]) // lower Fuse score = better match
+    .slice(0, 5)
+    .map(([item]) => item);
 }
 
 function buildDishContext(items){
