@@ -896,6 +896,11 @@ const CHAT_STOPWORDS = new Set([
   'from','as','be','been','being','tell','need','want','their','there','make','made','put'
 ]);
 
+// extra words that don't change which dish is meant
+const CHAT_FILLER = new Set([
+  'just','recipe','method','steps','ingredients','ingredient','spec','prep','cook','cooking','time','times','quantity','quantities'
+]);
+
 function normalizeDishName(s){
   return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
@@ -943,6 +948,31 @@ function findRelevantDishes(q){
 
   return Array.from(groups.values())
     .sort((a,b) => b.matchCount - a.matchCount || a.avgScore - b.avgScore);
+}
+
+// Returns dishes whose full name appears as a whole phrase in the query
+// (e.g. "how do I make miso mayo" -> Miso Mayo). Only the longest matching
+// name(s) are kept, so "Miso Mayo" beats a dish literally called "Mayo".
+function findExactNameMatches(q){
+  const nq = ' ' + normalizeDishName(q) + ' ';
+  const hits = DATA
+    .filter(d => !d.search_exclude && d.dish)
+    .map(d => ({ item: d, name: normalizeDishName(d.dish) }))
+    .filter(h => h.name.length > 2 && nq.includes(' ' + h.name + ' '))
+    // the dish name must account for the whole question; otherwise a short
+    // generic dish name (e.g. "Burger") would hijack "how do I make burger sauce"
+    .filter(h => {
+      const nameWords = new Set(h.name.split(' '));
+      return nq.trim().split(' ').every(w =>
+        w.length <= 2 || CHAT_STOPWORDS.has(w) || CHAT_FILLER.has(w) || nameWords.has(w));
+    });
+  if(!hits.length) return [];
+  const longest = Math.max(...hits.map(h => h.name.length));
+  const seen = new Set();
+  return hits
+    .filter(h => h.name.length === longest)
+    .filter(h => !seen.has(h.name) && seen.add(h.name))
+    .map(h => h.item);
 }
 
 // Classifies a search into one of three outcomes so we can decide, without
@@ -996,8 +1026,13 @@ async function sendChatMessage(){
   chatSend.disabled = true;
   addChatMessage(msg, 'user');
 
-  const results = findRelevantDishes(msg);
-  const match = classifyMatches(results);
+  // If the message contains a dish's full name, that dish wins outright - no
+  // fuzzy search, no "did you mean" (this also stops a typed answer to a
+  // clarifying question from being re-run through the same ambiguous search).
+  const exactItems = findExactNameMatches(msg);
+  const match = exactItems.length
+    ? { outcome: 'clear', items: exactItems.slice(0, 5) }
+    : classifyMatches(findRelevantDishes(msg));
 
   if(match.outcome === 'nothing'){
     addChatMessage("I couldn't find anything matching that in the app - could you rephrase, or add a bit more detail?", 'bot');
